@@ -1,53 +1,57 @@
+import os
 import struct
 import numpy as np
-import matplotlib.pyplot as plt
+from PIL import Image
 
-def read_etl1_single_file(file_path):
-    """Lee un solo archivo de datos ETL1 y maneja errores de lectura."""
-    data = []
-    failed_samples = 0  # Contador de muestras que no se pueden leer correctamente
+def read_etl1c_record(f):
+    header = f.read(5)
+    if len(header) < 5:
+        return None
+    jis_code, quality = struct.unpack('>2H1x', header)
+    image_data = f.read(4032)
+    if len(image_data) < 4032:
+        print("Registro incompleto, tamaño inesperado.")
+        return None
+    bitmap = np.frombuffer(image_data, dtype=np.uint8).reshape((63, 64))
+    return jis_code, quality, bitmap
 
+def extract_images_from_etl_file(file_path, output_folder, max_images=10):
+    images = []
     with open(file_path, 'rb') as f:
-        # Leer el encabezado para obtener el número de muestras
-        header = f.read(8)
-        num_samples = struct.unpack('>I', header[4:8])[0]  # Número de muestras
-        print(f"Reading {file_path}: {num_samples} samples")
+        i = 0
+        while i < max_images:
+            record = read_etl1c_record(f)
+            if record is None:
+                break
+            jis_code, quality, bitmap = record
+            kanji_images = []
+            for row in range(2):
+                for col in range(2):
+                    kanji = bitmap[row*32:(row+1)*32, col*32:(col+1)*32]
+                    kanji_images.append(kanji)
+                    kanji_image = Image.fromarray(kanji)
+                    kanji_image.save(os.path.join(output_folder, f"{jis_code}_{i}_kanji_{row*2+col}.png"))
+                    print(f"Guardado {jis_code}_{i}_kanji_{row*2+col}.png")
+            i += 1
+            images.extend(kanji_images)
+    return images
 
-        # Leer las muestras una por una
-        for _ in range(num_samples):
-            sample = f.read(5464)  # Leer 5464 bytes (tamaño de cada muestra)
-            
-            if len(sample) != 5464:
-                raise ValueError(f"Expected 5464 bytes, but got {len(sample)} bytes for a sample.")
-            
-            # Intentar convertir en un array de 72x76
-            try:
-                image_data = np.frombuffer(sample, dtype=np.uint8).reshape((72, 76))
-                # Recortar a 64x63 (centrar la imagen)
-                image_data = image_data[4:68, 6:69]  # Recorte para obtener 64x63
-                data.append(image_data)
-            except ValueError:
-                # Si ocurre un error de reshape, contar y continuar con el siguiente
-                failed_samples += 1
-                print(f"Error reshaping sample, skipping this one. Total failed: {failed_samples}")
+def process_dataset(dataset_folder, output_folder, max_images=10):
+    for subfolder in os.listdir(dataset_folder):
+        subfolder_path = os.path.join(dataset_folder, subfolder)
+        if os.path.isdir(subfolder_path):
+            for file_name in os.listdir(subfolder_path):
+                if file_name.endswith('.bin') or file_name.startswith(subfolder + 'C'):
+                    file_path = os.path.join(subfolder_path, file_name)
+                    print(f"Procesando {file_path}...")
+                    output_subfolder = os.path.join(output_folder, subfolder)
+                    os.makedirs(output_subfolder, exist_ok=True)
+                    extract_images_from_etl_file(file_path, output_subfolder, max_images)
 
-    print(f"Total failed samples: {failed_samples}")
-    return np.array(data)
+# Ruta de la carpeta del dataset y de salida
+dataset_folder = './datasets'
+output_folder = './kanji_images'
+os.makedirs(output_folder, exist_ok=True)
 
-def plot_sample_image(data, index):
-    """Muestra una imagen de ejemplo del dataset."""
-    plt.imshow(data[index], cmap='gray')
-    plt.title(f"Sample {index}")
-    plt.show()
-
-# Ruta al archivo ETL1C_01
-etl1_file_path = './datasets/ETL1/ETL1C_01'  # Ruta al archivo específico
-
-# Leer los datos del archivo
-data = read_etl1_single_file(etl1_file_path)
-
-# Mostrar una imagen de ejemplo
-plot_sample_image(data, 0)
-
-# Asegurarse de que los datos estén en formato correcto
-print(f"Data shape: {data.shape}")
+# Procesar todo el dataset, tomando solo 10 imágenes por archivo
+process_dataset(dataset_folder, output_folder, max_images=10)
